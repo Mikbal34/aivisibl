@@ -17,8 +17,9 @@ export async function queryGemini(prompt: string): Promise<GeminiResponse> {
   }
 
   try {
+    console.log('Gemini API request starting...')
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: {
@@ -36,23 +37,67 @@ export async function queryGemini(prompt: string): Promise<GeminiResponse> {
           ],
           generationConfig: {
             temperature: 0.7,
-            maxOutputTokens: 2048,
+            maxOutputTokens: 8000,
           },
+          safetySettings: [
+            {
+              category: "HARM_CATEGORY_HARASSMENT",
+              threshold: "BLOCK_ONLY_HIGH"
+            },
+            {
+              category: "HARM_CATEGORY_HATE_SPEECH",
+              threshold: "BLOCK_ONLY_HIGH"
+            },
+            {
+              category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              threshold: "BLOCK_ONLY_HIGH"
+            },
+            {
+              category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+              threshold: "BLOCK_ONLY_HIGH"
+            }
+          ]
         }),
       }
     )
 
+    console.log('Gemini API response status:', response.status, response.statusText)
+
     if (!response.ok) {
-      throw new Error(`Gemini API error: ${response.statusText}`)
+      const errorBody = await response.text()
+      console.error('Gemini API error response:', errorBody)
+      throw new Error(`Gemini API error: ${response.status} ${response.statusText} - ${errorBody}`)
     }
 
     const data = await response.json()
+    console.log('Gemini API response received, candidates:', data.candidates?.length)
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    // Check for content safety blocks
+    const candidate = data.candidates?.[0]
+    const finishReason = candidate?.finishReason
+
+    if (finishReason === 'SAFETY') {
+      console.error('Gemini response blocked by safety filters:', JSON.stringify(candidate.safetyRatings))
+      throw new Error('Gemini content blocked by safety filters')
+    }
+
+    if (finishReason === 'MAX_TOKENS') {
+      console.warn('Gemini hit max tokens, response may be incomplete')
+    }
+
+    const text = candidate?.content?.parts?.[0]?.text || ''
+
+    if (!text) {
+      console.warn('Gemini returned empty text. Finish reason:', finishReason)
+      console.warn('Full response:', JSON.stringify(data, null, 2))
+      throw new Error(`Gemini returned empty response. Finish reason: ${finishReason}`)
+    }
 
     // Gemini doesn't provide ranked sources by default
     // We'll extract URLs from the response text
     const sources: LLMSource[] = extractUrlsFromText(text)
+
+    console.log('Gemini response processed successfully, sources found:', sources.length)
 
     return {
       response_text: text,
